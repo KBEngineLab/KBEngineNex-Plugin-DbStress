@@ -1,0 +1,91 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Read plugin metadata
+        id: meta
+        run: |
+          NAME=$(jq -r '.name' plugin.json)
+          VERSION=$(jq -r '.version' plugin.json)
+          echo "name=${NAME}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "zip=${NAME}-${VERSION}.zip" >> $GITHUB_OUTPUT
+
+      - name: Validate tag matches plugin.json version
+        run: |
+          TAG_VERSION="${{ github.ref_name }}"
+          TAG_VERSION="${TAG_VERSION#v}"
+          JSON_VERSION="${{ steps.meta.outputs.version }}"
+          if [ "$TAG_VERSION" != "$JSON_VERSION" ]; then
+            echo "ERROR: tag version '${TAG_VERSION}' does not match plugin.json version '${JSON_VERSION}'"
+            exit 1
+          fi
+          echo "Version match: ${JSON_VERSION} ✓"
+
+      - name: Create zip
+        run: |
+          zip -r "${{ steps.meta.outputs.zip }}" . \
+            -x '.git/*' \
+            -x '__pycache__/*' \
+            -x '**/__pycache__/*' \
+            -x '*.pyc' \
+            -x '.pytest_cache/*' \
+            -x '.github/*'
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
+          files: "${{ steps.meta.outputs.zip }}"
+          generate_release_notes: true
+
+      - name: Sync code & tags to Gitee
+        run: |
+          REPO_LOWER="${GITHUB_REPOSITORY##*/}"
+          REPO_LOWER="${REPO_LOWER,,}"
+          git remote add gitee "https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/KBEngineLab/${REPO_LOWER}.git"
+          git push gitee --mirror
+
+      - name: Create Gitee Release
+        id: gitee_release
+        run: |
+          REPO_LOWER="${GITHUB_REPOSITORY##*/}"
+          REPO_LOWER="${REPO_LOWER,,}"
+          RESPONSE=$(curl -s -X POST "https://gitee.com/api/v5/repos/KBEngineLab/${REPO_LOWER}/releases" \
+            -H "Content-Type: application/json" \
+            -d "{
+              \"access_token\": \"${{ secrets.GITEE_TOKEN }}\",
+              \"tag_name\": \"${{ github.ref_name }}\",
+              \"name\": \"${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}\",
+              \"body\": \"${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}\"
+            }")
+          echo "response=${RESPONSE}" >> $GITHUB_OUTPUT
+          RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
+          echo "release_id=${RELEASE_ID}" >> $GITHUB_OUTPUT
+          if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
+            echo "Failed to create Gitee release: $RESPONSE"
+            exit 1
+          fi
+          echo "Gitee release created: id=${RELEASE_ID}"
+
+      - name: Upload zip to Gitee Release
+        run: |
+          REPO_LOWER="${GITHUB_REPOSITORY##*/}"
+          REPO_LOWER="${REPO_LOWER,,}"
+          curl -s -X POST \
+            "https://gitee.com/api/v5/repos/KBEngineLab/${REPO_LOWER}/releases/${{ steps.gitee_release.outputs.release_id }}/attach_files" \
+            -F "access_token=${{ secrets.GITEE_TOKEN }}" \
+            -F "file=@${{ steps.meta.outputs.zip }}"
+
+
