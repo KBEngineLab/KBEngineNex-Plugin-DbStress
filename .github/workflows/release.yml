@@ -38,8 +38,12 @@ jobs:
             echo "Version match: ${JSON_VERSION} ✓"
           else
             echo "Manual trigger — creating tag v${JSON_VERSION}..."
-            git tag "v${JSON_VERSION}"
-            git push origin "v${JSON_VERSION}"
+            if git ls-remote --tags origin "v${JSON_VERSION}" | grep -q "v${JSON_VERSION}"; then
+              echo "Tag v${JSON_VERSION} already exists on remote, skipping push."
+            else
+              git tag "v${JSON_VERSION}"
+              git push origin "v${JSON_VERSION}"
+            fi
           fi
 
       - name: Check if release already exists
@@ -94,7 +98,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d "{
               \"access_token\": \"${{ secrets.GITEE_TOKEN }}\",
-              \"tag_name\": \"${{ github.ref_name }}\",
+              \"tag_name\": \"v${{ steps.meta.outputs.version }}\",
               \"name\": \"${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}\",
               \"body\": \"${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}\"
             }")
