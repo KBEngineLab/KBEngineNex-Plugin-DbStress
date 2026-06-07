@@ -25,20 +25,37 @@ jobs:
 
       - name: Validate tag matches plugin.json version
         run: |
+          JSON_VERSION="${{ steps.meta.outputs.version }}"
           if [ "${{ github.ref_type }}" = "tag" ]; then
             TAG_VERSION="${{ github.ref_name }}"
             TAG_VERSION="${TAG_VERSION#v}"
-            JSON_VERSION="${{ steps.meta.outputs.version }}"
             if [ "$TAG_VERSION" != "$JSON_VERSION" ]; then
               echo "ERROR: tag version '${TAG_VERSION}' does not match plugin.json version '${JSON_VERSION}'"
               exit 1
             fi
             echo "Version match: ${JSON_VERSION} ✓"
           else
-            echo "Manual trigger — using plugin.json version: ${{ steps.meta.outputs.version }}"
+            echo "Manual trigger — creating tag v${JSON_VERSION}..."
+            git tag "v${JSON_VERSION}"
+            git push origin "v${JSON_VERSION}"
           fi
 
+      - name: Check if release already exists
+        id: check_release
+        run: |
+          TAG="v${{ steps.meta.outputs.version }}"
+          EXISTS=$(gh release view "$TAG" --json tagName -q '.tagName' 2>/dev/null || echo "")
+          if [ -n "$EXISTS" ]; then
+            echo "Release for ${TAG} already exists, skipping."
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+
       - name: Create zip
+        if: steps.check_release.outputs.skip != 'true'
         run: |
           zip -r "${{ steps.meta.outputs.zip }}" . \
             -x '.git/*' \
@@ -49,6 +66,7 @@ jobs:
             -x '.github/*'
 
       - name: Create GitHub Release
+        if: steps.check_release.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
           name: "${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
@@ -56,6 +74,7 @@ jobs:
           generate_release_notes: true
 
       - name: Sync code & tags to Gitee
+        if: steps.check_release.outputs.skip != 'true'
         run: |
           REPO_LOWER="${GITHUB_REPOSITORY##*/}"
           REPO_LOWER="${REPO_LOWER,,}"
@@ -63,6 +82,7 @@ jobs:
           git push gitee --mirror
 
       - name: Create Gitee Release
+        if: steps.check_release.outputs.skip != 'true'
         id: gitee_release
         run: |
           REPO_LOWER="${GITHUB_REPOSITORY##*/}"
@@ -85,6 +105,7 @@ jobs:
           echo "Gitee release created: id=${RELEASE_ID}"
 
       - name: Upload zip to Gitee Release
+        if: steps.check_release.outputs.skip != 'true'
         run: |
           REPO_LOWER="${GITHUB_REPOSITORY##*/}"
           REPO_LOWER="${REPO_LOWER,,}"
