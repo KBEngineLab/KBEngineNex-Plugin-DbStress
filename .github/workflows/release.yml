@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Read plugin metadata
         id: meta
@@ -46,22 +48,7 @@ jobs:
             fi
           fi
 
-      - name: Check if release already exists
-        id: check_release
-        run: |
-          TAG="v${{ steps.meta.outputs.version }}"
-          EXISTS=$(gh release view "$TAG" --json tagName -q '.tagName' 2>/dev/null || echo "")
-          if [ -n "$EXISTS" ]; then
-            echo "Release for ${TAG} already exists, skipping."
-            echo "skip=true" >> $GITHUB_OUTPUT
-          else
-            echo "skip=false" >> $GITHUB_OUTPUT
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-
       - name: Create zip
-        if: steps.check_release.outputs.skip != 'true'
         run: |
           zip -r "${{ steps.meta.outputs.zip }}" . \
             -x '.git/*' \
@@ -72,24 +59,33 @@ jobs:
             -x '.github/*'
 
       - name: Create GitHub Release
-        if: steps.check_release.outputs.skip != 'true'
         uses: softprops/action-gh-release@v2
         with:
+          overwrite: true
           tag_name: "v${{ steps.meta.outputs.version }}"
           name: "${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}"
           files: "${{ steps.meta.outputs.zip }}"
           generate_release_notes: true
 
       - name: Sync code & tags to Gitee
-        if: steps.check_release.outputs.skip != 'true'
+        env:
+          GITEE_USER: ${{ secrets.GITEE_USERNAME }}
+          GITEE_PASS: ${{ secrets.GITEE_TOKEN }}
         run: |
+          if [ -z "${GITEE_USER}" ] || [ -z "${GITEE_PASS}" ]; then
+            echo "GITEE_USERNAME or GITEE_TOKEN not set, skipping Gitee sync."
+            exit 0
+          fi
           REPO_LOWER="${GITHUB_REPOSITORY##*/}"
           REPO_LOWER="${REPO_LOWER,,}"
-          git remote add gitee "https://${{ secrets.GITEE_USERNAME }}:${{ secrets.GITEE_TOKEN }}@gitee.com/KBEngineLab/${REPO_LOWER}.git"
-          git push gitee --mirror
+          printf '#!/bin/sh\necho "${GIT_PASSWORD}"\n' > /tmp/git-askpass.sh
+          chmod +x /tmp/git-askpass.sh
+          export GIT_PASSWORD="${GITEE_PASS}"
+          export GIT_ASKPASS=/tmp/git-askpass.sh
+          git push "https://${GITEE_USER}@gitee.com/KBEngineLab/${REPO_LOWER}.git" --all
+          git push "https://${GITEE_USER}@gitee.com/KBEngineLab/${REPO_LOWER}.git" --tags --force
 
       - name: Create Gitee Release
-        if: steps.check_release.outputs.skip != 'true'
         id: gitee_release
         run: |
           REPO_LOWER="${GITHUB_REPOSITORY##*/}"
@@ -99,12 +95,17 @@ jobs:
             -d "{
               \"access_token\": \"${{ secrets.GITEE_TOKEN }}\",
               \"tag_name\": \"v${{ steps.meta.outputs.version }}\",
+              \"target_commitish\": \"main\",
               \"name\": \"${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}\",
               \"body\": \"${{ steps.meta.outputs.name }} v${{ steps.meta.outputs.version }}\"
             }")
           echo "response=${RESPONSE}" >> $GITHUB_OUTPUT
           RELEASE_ID=$(echo "$RESPONSE" | jq -r '.id')
           echo "release_id=${RELEASE_ID}" >> $GITHUB_OUTPUT
+          if echo "$RESPONSE" | jq -e '.message' | grep -qi 'already'; then
+            echo "Gitee release already exists, skipping."
+            exit 0
+          fi
           if [ -z "$RELEASE_ID" ] || [ "$RELEASE_ID" = "null" ]; then
             echo "Failed to create Gitee release: $RESPONSE"
             exit 1
@@ -112,7 +113,6 @@ jobs:
           echo "Gitee release created: id=${RELEASE_ID}"
 
       - name: Upload zip to Gitee Release
-        if: steps.check_release.outputs.skip != 'true'
         run: |
           REPO_LOWER="${GITHUB_REPOSITORY##*/}"
           REPO_LOWER="${REPO_LOWER,,}"
